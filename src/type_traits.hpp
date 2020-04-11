@@ -1,5 +1,5 @@
 /****************************************************************************************\
-  File:    utilities.hpp
+  File:    type_traits.hpp
   Package: lockfree
   Created: 2020-04-02 by Tristan Bayfield
 
@@ -17,7 +17,7 @@ namespace std {
 template<typename T>
 struct remove_cvref
 {
-  using type = std::remove_cv_t<std::remove_reference_t<T>>;
+  using type = ::std::remove_cv_t<::std::remove_reference_t<T>>;
 };
 
 template<typename T>

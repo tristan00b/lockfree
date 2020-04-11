@@ -11,8 +11,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <iterator>
 #include <thread>
 #include <utility>
+#include <vector>
+
 #include <lockfree/queue.hpp>
 
 #include "../common.hpp"
@@ -30,6 +33,14 @@ constexpr auto queue_size = std::size_t { 25 };
   Single-threaded tests
 \****************************************************************************************/
 
+TEST_CASE("Can be default constructed", "[queue]")
+{
+  auto q1 = queue<data_type, queue_size> { };
+  auto q2 = queue<data_type, queue_size, data_write_policy::no_overwrite> { };
+  auto q3 = queue<data_type, queue_size, data_write_policy::overwrite> { };
+}
+
+
 TEST_CASE("Can construct from initializer list", "[queue]")
 {
   auto q = queue<data_type, queue_size> {
@@ -39,6 +50,7 @@ TEST_CASE("Can construct from initializer list", "[queue]")
     data_type { }
   };
 }
+
 
 TEST_CASE("Can push and pop elements", "[queue]")
 {
@@ -50,6 +62,7 @@ TEST_CASE("Can push and pop elements", "[queue]")
   REQUIRE(q.pop(res));
   REQUIRE(res == 42);
 }
+
 
 TEST_CASE("Popped elements are the same as pushed", "[queue]")
 {
@@ -85,7 +98,7 @@ TEST_CASE("Queue correctly reports when it is empty and full", "[queue]")
   // The queue is expected to be empty before pushing any elements to it
   REQUIRE(q.empty());
 
-  // Pushthe test data onto the queue
+  // Push the test data onto the queue
   for (auto elem : input_buffer)
   { q.push(std::move(elem)); }
 
@@ -115,9 +128,10 @@ TEST_CASE("Queue reports the correct number of enqueued elements", "[queue]")
   }
 }
 
-TEST_CASE("Can clear the queue", "[queue]")
+
+TEST_CASE("Queue can be cleared", "[queue]")
 {
-  auto q = queue<data_type, queue_size> {
+  auto q = queue<data_type, queue_size, data_write_policy::no_overwrite> {
     data_type { },
     data_type { },
     data_type { },
@@ -125,9 +139,7 @@ TEST_CASE("Can clear the queue", "[queue]")
   };
 
   REQUIRE_FALSE(q.empty());
-
   q.clear();
-
   REQUIRE(q.empty());
 }
 
@@ -142,111 +154,125 @@ TEST_CASE("Queue can be instantiated from an initializer list", "[queue]")
 }
 
 
-// // TODO
-// TEST_CASE("Queue properly handles type conversions", "[queue]")
-// {
-//   // Part a. Test with trivial types
-//   auto q1 = queue<int, queue_size> { };
+TEST_CASE("Queue handles type conversions", "[queue]")
+{
+  // Part a. Test with trivial types
+  auto q1 = queue<int, queue_size> { };
 
-//   REQUIRE(q1.push(std::size_t { 1 }));
-//   REQUIRE(q1.pop().value_or(-1) == 1);
+  REQUIRE(q1.push(std::size_t { 1 }));
+  REQUIRE(q1.pop().value_or(-1) == 1);
 
-//   auto q2 = queue<intl_t, queue_size> { };
-//   auto ivalue = extl_t {  4 };
-//   auto ovalue = extl_t { -1 };
+  auto q2 = queue<intl_t, queue_size> { };
+  auto ivalue = extl_t {  4 };
+  auto ovalue = extl_t { -1 };
 
-//   REQUIRE(q2.push(ivalue));
-//   REQUIRE(q2.pop(ovalue));
-//   REQUIRE((ovalue == ivalue)); // Catch balks w/o extra parens
-// }
+  REQUIRE(q2.push(ivalue));
+  REQUIRE(q2.pop(ovalue));
+  REQUIRE((ovalue == ivalue)); // Catch balks w/o extra parens
+}
+
+TEST_CASE("Queue accepts move-only types", "[queue]")
+{
+  auto q = queue<std::unique_ptr<int>, queue_size> { };
+
+  REQUIRE(q.push( std::make_unique<int>(42) ));
+  REQUIRE(q.pop().has_value());
+}
 
 
+TEST_CASE("Queue accepts a range of elements")
+{
+  auto o_elems = std::vector<data_type> {
+    data_type { 1 },
+    data_type { 2 },
+    data_type { 3 },
+    data_type { 4 },
+    data_type { 5 },
+  };
+  auto i_elems = std::vector<data_type>(o_elems.size());
 
-// TEST_CASE("Queue accepts move-only types", "[queue]")
-// {
-//   auto q = queue<std::unique_ptr<int>, queue_size> { };
+  auto q = queue<data_type, queue_size> { };
 
-//   REQUIRE(q.push( std::make_unique<int>(42) ));
-//   REQUIRE(q.pop().has_value());
-// }
+  auto i_count = q.push_range(std::begin(o_elems), std::end(o_elems));
+  auto o_count = q.pop_range(std::begin(i_elems),  std::end(i_elems));
 
+  auto allsame = std::equal(std::begin(o_elems), std::end(o_elems),
+                            std::begin(i_elems), std::end(i_elems));
+
+  REQUIRE(i_count == o_count);
+  REQUIRE(allsame);
+}
 
 
 /****************************************************************************************\
   Multi-threaded tests
 \****************************************************************************************/
 
+TEST_CASE("Can be used safely in a multithreaded context", "[queue, multi-threaded]")
+{
+  /* Note: passing this test is not a guarantee of thread-safety! */
+
+  constexpr auto data_size = 100u;
+
+  auto input_buffer = tests::helpers::iota<data_type, data_size>();
+  auto output_buffer = std::array<data_type, data_size> { };
+  auto q = queue<data_type, queue_size> { };
+
+  // Asynchronously pushes each element of input_buffer to the queue
+  auto producer = std::thread([&q, &input_buffer] () {
+    for (auto elem : input_buffer)
+      q.push_wait( std::move(elem) );
+  });
+
+  // Asynchronously pops each element of the queue and assigns it to the corresponding
+  // element of output_buffer.
+  auto consumer = std::thread([&q, &output_buffer] () {
+      for (auto & elem : output_buffer)
+        q.pop_wait(elem);
+  });
+
+  producer.join();
+  consumer.join();
+
+  REQUIRE(output_buffer == input_buffer);
+}
 
 
-// TEST_CASE("Can be used safely in a multithreaded context", "[queue, multi-threaded]")
-// {
-//   /* Note: passing this test is not a guarantee of thread-safety! */
+TEST_CASE("Can time out on *_wait_for operations", "[queue, multi-threaded]")
+{
+  constexpr auto data_size = 100u;
 
-//   constexpr auto data_size = 100u;
+  // With a timeout of 1 nanosecond, we are pretty much guaranteed to have timeouts
+  auto timeout = 1ns;
+  auto push_timeouts = std::array<bool, data_size> { };
+  auto pop_timeouts  = std::array<bool, data_size> { };
 
-//   auto input_buffer = tests::helpers::iota<data_type, data_size>();
-//   auto output_buffer = std::array<data_type, data_size> { };
-//   auto q = queue<data_type, queue_size> { };
+  auto q = queue<data_type, queue_size> { };
 
-//   // Asynchronously pushes each element of input_buffer to the queue
-//   auto producer = std::thread([&q, &input_buffer] () {
-//     for (auto elem : input_buffer)
-//       q.push_wait( std::move(elem) );
-//   });
+  auto producer = std::thread([&q, &push_timeouts, &timeout] () {
+    for (auto & result : push_timeouts)
+    {
+      result = q.push_wait_for(42, 1ns);
+    }
+  });
 
-//   // Asynchronously pops each element of the queue and assigns it to the corresponding
-//   // element of output_buffer.
-//   auto consumer = std::thread([&q, &output_buffer] () {
-//       for (auto & elem : output_buffer)
-//         q.pop_wait(elem);
-//   });
+  auto consumer = std::thread([&q, &pop_timeouts, &timeout] () {
+    auto elem = data_type { };
+    for (auto & result : pop_timeouts)
+    { result = q.pop_wait_for(elem, timeout); }
+  });
 
-//   producer.join();
-//   consumer.join();
+  producer.join();
+  consumer.join();
 
-//   REQUIRE(output_buffer == input_buffer);
-// }
-
-
-
-// TEST_CASE("Can time out on *_wait_for operations", "[queue, multi-threaded]")
-// {
-//   constexpr auto data_size = 100u;
-
-//   // With a timeout of 1 nanosecond, we are pretty much guaranteed to have timeouts
-//   auto timeout = 1ns;
-//   auto push_timeouts = std::array<bool, data_size> { };
-//   auto pop_timeouts  = std::array<bool, data_size> { };
-
-//   auto q = queue<data_type, queue_size> { };
-
-//   auto producer = std::thread([&q, &push_timeouts, &timeout] () {
-//     for (auto & result : push_timeouts)
-//     {
-//       result = q.push_wait_for(42, 1ns);
-//     }
-//   });
-
-//   auto consumer = std::thread([&q, &pop_timeouts, &timeout] () {
-//     auto elem = data_type { };
-//     for (auto & result : pop_timeouts)
-//     { result = q.pop_wait_for(elem, timeout); }
-//   });
-
-//   producer.join();
-//   consumer.join();
-
-//   CHECK(std::count(push_timeouts.begin(), push_timeouts.end(), false));
-//   CHECK(std::count(pop_timeouts.begin(),  pop_timeouts.end(),  false));
-// }
-
+  CHECK(std::count(push_timeouts.begin(), push_timeouts.end(), false));
+  CHECK(std::count(pop_timeouts.begin(),  pop_timeouts.end(),  false));
+}
 
 
 /****************************************************************************************\
   Benchmarks
 \****************************************************************************************/
-
-
 
 // TEST_CASE("Queue push* benchmarks", "[queue, push, benchmark]")
 // {
